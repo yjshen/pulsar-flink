@@ -71,28 +71,31 @@ public abstract class PulsarTestBase extends TestLogger {
         log.info("    Starting PulsarTestBase ");
         log.info("-------------------------------------------------------------------------");
 
-        PulsarServiceSpec spec = PulsarServiceSpec.builder()
-                .clusterName("standalone-" + UUID.randomUUID())
-                .enableContainerLogging(false)
-                .build();
+//        PulsarServiceSpec spec = PulsarServiceSpec.builder()
+//                .clusterName("standalone-" + UUID.randomUUID())
+//                .enableContainerLogging(false)
+//                .build();
+//
+//        pulsarService = PulsarServiceFactory.createPulsarService(spec);
+//        pulsarService.start();
+//
+//        for (URI uri : pulsarService.getServiceUris()) {
+//            if (uri != null && uri.getScheme().equals("pulsar")) {
+//                serviceUrl = uri.toString();
+//            } else if (uri != null && !uri.getScheme().equals("pulsar")) {
+//                adminUrl = uri.toString();
+//            }
+//        }
+//
+//        try (PulsarAdmin admin = PulsarAdmin.builder().serviceHttpUrl(adminUrl).build()) {
+//            admin.namespaces().createNamespace("public/default", Sets.newHashSet("standalone"));
+//        }
 
-        pulsarService = PulsarServiceFactory.createPulsarService(spec);
-        pulsarService.start();
-
-        for (URI uri : pulsarService.getServiceUris()) {
-            if (uri != null && uri.getScheme().equals("pulsar")) {
-                serviceUrl = uri.toString();
-            } else if (uri != null && !uri.getScheme().equals("pulsar")) {
-                adminUrl = uri.toString();
-            }
-        }
-
-        try (PulsarAdmin admin = PulsarAdmin.builder().serviceHttpUrl(adminUrl).build()) {
-            admin.namespaces().createNamespace("public/default", Sets.newHashSet("standalone"));
-        }
+        serviceUrl = "pulsar://localhost:6650";
+        adminUrl = "http://localhost:8080";
 
         log.info("-------------------------------------------------------------------------");
-        log.info("Successfully started pulsar service at cluster " + spec.clusterName());
+//        log.info("Successfully started pulsar service at cluster " + spec.clusterName());
         log.info("-------------------------------------------------------------------------");
 
     }

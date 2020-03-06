@@ -22,6 +22,8 @@ import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.common.serialization.TypeInformationSerializationSchema;
+import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.scala.typeutils.Types;
@@ -809,6 +811,131 @@ public class FlinkPulsarITest extends PulsarTestBaseWithFlink {
 
         assertEquals(client.getJobStatus(jobid).get(), JobStatus.CANCELED);
 
+    }
+
+    static class FlinkPulsarIntSink extends FlinkPulsarSinkBase<Integer> {
+
+        public FlinkPulsarIntSink(
+                String serviceUrl,
+                String adminUrl,
+                Optional<String> defaultTopicName,
+                Properties properties,
+                TopicKeyExtractor<Integer> topicKeyExtractor) {
+            super(serviceUrl, adminUrl, defaultTopicName, properties, topicKeyExtractor);
+        }
+
+        @Override
+        protected Schema<?> getPulsarSchema() {
+            return Schema.INT32;
+        }
+    }
+
+    @Test
+    public void addPartitionNumberDuringSink() throws Exception {
+	    String inputTp = "xxx1";
+	    createTopic(inputTp, 3, adminUrl);
+
+	    String outTp = "yyy1";
+	    int originalParallelism = 3;
+	    int changedParallelism = 5;
+
+	    createTopic(outTp, originalParallelism, adminUrl);
+
+        List<Integer> messages = new ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            messages.add(i);
+        }
+
+        sendTypedMessages(inputTp, SchemaType.INT32, messages, Optional.empty());
+
+        StreamExecutionEnvironment see = StreamExecutionEnvironment.getExecutionEnvironment();
+        see.getConfig().disableSysoutLogging();
+        see.setParallelism(3);
+
+        Properties sourceProps = sourceProperties();
+        sourceProps.setProperty("topic", inputTp);
+
+        Properties sinkProp = sinkProperties();
+        sinkProp.setProperty("flushoncheckpoint", "true");
+        sinkProp.setProperty("pulsar.producer.batchingEnabled", "false");
+
+        FlinkPulsarSource<Integer> flinkPulsarSource =
+                new FlinkPulsarSource<>(
+                        serviceUrl,
+                        adminUrl,
+                        new TypeInformationSerializationSchema<>(BasicTypeInfo.INT_TYPE_INFO, new ExecutionConfig()),
+                        sourceProps);
+        DataStream stream = see.addSource(flinkPulsarSource);
+
+        stream.addSink(new FlinkPulsarIntSink(serviceUrl, adminUrl, Optional.of(outTp), sinkProp, TopicKeyExtractor.NULL));
+
+        AtomicReference<Throwable> jobError = new AtomicReference<>();
+
+        JobGraph jobGraph = StreamingJobGraphGenerator.createJobGraph(see.getStreamGraph());
+        JobID jobId = jobGraph.getJobID();
+
+        Runnable jobRunner = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    client.setDetached(false);
+                    client.submitJob(jobGraph, getClass().getClassLoader());
+                } catch(Throwable e) {
+                    jobError.set(e);
+                }
+            }
+        };
+
+        Thread runnerThread = new Thread(jobRunner, "program runner thread");
+        runnerThread.start();
+
+        Thread.sleep(2000);
+
+        PulsarAdmin admin = PulsarAdmin.builder().serviceHttpUrl(adminUrl).build();
+        admin.topics().updatePartitionedTopic(outTp, changedParallelism);
+
+        List<Integer> messages2 = new ArrayList<>();
+        for (int i = 50; i < 100; i++) {
+            messages2.add(i);
+        }
+
+        sendTypedMessages(inputTp, SchemaType.INT32, messages2, Optional.empty());
+
+        Throwable failureCause = jobError.get();
+
+        if (failureCause != null) {
+            failureCause.printStackTrace();
+            fail("Test failed prematurely with: " + failureCause.getMessage());
+        }
+
+        StreamExecutionEnvironment see1 = StreamExecutionEnvironment.getExecutionEnvironment();
+        see1.getConfig().disableSysoutLogging();
+        see1.setParallelism(1);
+
+        Properties sourceProps1 = sourceProperties();
+        sourceProps1.setProperty("topic", inputTp + "-partition-4");
+
+        FlinkPulsarSource<Integer> flinkPulsarSource1 =
+                new FlinkPulsarSource<>(
+                        serviceUrl,
+                        adminUrl,
+                        new TypeInformationSerializationSchema<>(BasicTypeInfo.INT_TYPE_INFO, new ExecutionConfig()),
+                        sourceProps1);
+
+        see1.addSource(flinkPulsarSource1)
+                .map(new FailingIdentityMapper<>(1))
+                .addSink(new DiscardingSink<>());
+
+
+        TestUtils.tryExecute(see1, "Assert new partition got data");
+
+        // cancel
+        client.cancel(jobId);
+
+        // wait for the program to be done and validate that we failed with the right exception
+        runnerThread.join();
+
+        assert(client.getJobStatus(jobId).get() == JobStatus.CANCELED);
     }
 
     public static boolean isCause(
